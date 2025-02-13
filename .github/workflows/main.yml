@@ -1,0 +1,84 @@
+name: Custom Nvidia Jetson Xavier NX Devkit eMMC
+
+on:
+  workflow_dispatch:
+    inputs:
+      device:
+        description: 'Device type (e.g., jetson-xavier-nx-devkit-emmc)'
+        required: true
+        default: 'jetson-xavier-nx-devkit-emmc'
+      shared:
+        description: 'Shared directory in absolute path to the build folder'
+        required: true
+        default: 'build/'
+      release_tag:
+        description: 'Release tag (e.g., v1.0.0)'
+        required: true
+        default: 'v1.0.0'
+      release_name:
+        description: 'Release name'
+        required: false
+        default: 'Balena Image Release'
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Install development tools and dependencies
+        run: |
+          # Install development tools and dependencies
+          sudo apt-get update
+          sudo apt-get install -y build-essential curl uidmap apt-transport-https ca-certificates curl software-properties-common
+          sudo apt-get install -y gnupg lsb-release git python3 nodejs npm
+          sudo apt-get install -y qemu-user-static binfmt-support
+
+      - name: Setup Docker Rootless
+        run: |
+          for pkg in docker.io docker-doc docker-compose docker-compose-v2 podman-docker containerd runc; do sudo apt-get remove $pkg; done
+          # Install Docker in rootless mode using the official installation script
+          sudo install -m 0755 -d /etc/apt/keyrings
+          sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+          sudo chmod a+r /etc/apt/keyrings/docker.asc
+          echo \ "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu \
+                  $(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}") stable" | \
+                  sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+          sudo apt-get update
+          sudo apt-get install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+          sudo systemctl enable docker
+          sudo systemctl status docker
+          sudo usermod -aG docker ${USER}
+          su - ${USER}
+          docker --version
+      - name: Run Balena Build
+        run: |
+          # Ensure the build script is executable and run it with the provided inputs
+          ./balena-yocto-scripts/build/balena-build.sh -d "${{ github.event.inputs.device }}" -s "${{ github.event.inputs.shared }}"
+
+      - name: Compression
+        run: |
+          # Compress the image
+          gzip -c build/tmp/deploy/images/${{ github.event.inputs.device }}/balena-image-${{ github.event.inputs.device }}.balenaos-img > build/tmp/deploy/images/${{ github.event.inputs.device }}/balena-image-${{ github.event.inputs.device }}.img.gz
+      - name: Create GitHub Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.event.inputs.release_tag }}
+          release_name: ${{ github.event.inputs.release_name }}
+          draft: false
+          prerelease: false
+
+      - name: Upload Release Asset
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: build/tmp/deploy/images/${{ github.event.inputs.device }}/balena-image-${{ github.event.inputs.device }}.img.gz
+          asset_name: ${{ github.event.inputs.device }}-${{ github.event.inputs.release_tag }}.img
+          asset_content_type: application/gzip
